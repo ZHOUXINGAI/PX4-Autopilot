@@ -1,0 +1,6 @@
+# shellcheck disable=SC2154
+#
+# Extra MAVLink stream for attitude follower script.
+# Local bind port: 14683 (PX4)
+# Remote port:     14583 (Python script listens here)
+mavlink start -x -u 14683 -r 4000000 -m onboard -o 14583 -p
