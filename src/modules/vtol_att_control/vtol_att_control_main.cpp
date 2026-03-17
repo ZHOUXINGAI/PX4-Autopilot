@@ -56,7 +56,7 @@ using namespace time_literals;
 
 VtolAttitudeControl::VtolAttitudeControl() :
 	ModuleParams(nullptr),
-	WorkItem(MODULE_NAME, px4::wq_configurations::rate_ctrl),
+	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::rate_ctrl),
 	_loop_perf(perf_alloc(PC_ELAPSED, "vtol_att_control: cycle"))
 {
 	// start vtol in rotary wing mode
@@ -94,6 +94,9 @@ VtolAttitudeControl::~VtolAttitudeControl()
 bool
 VtolAttitudeControl::init()
 {
+	// Keep the VTOL state machine alive even when Offboard direct_actuator bypasses
+	// the internal attitude/rate setpoint publishers that normally wake this module.
+	ScheduleOnInterval(20_ms);
 	ScheduleNow();
 	return true;
 }
@@ -342,39 +345,51 @@ VtolAttitudeControl::Run()
 		break;
 	}
 
-	if (should_run) {
-		parameters_update();
+	parameters_update();
 
-		_vehicle_control_mode_sub.update(&_vehicle_control_mode);
-		_vehicle_attitude_sub.update(&_vehicle_attitude);
-		_local_pos_sub.update(&_local_pos);
-		_local_pos_sp_sub.update(&_local_pos_sp);
-		_pos_sp_triplet_sub.update(&_pos_sp_triplet);
-		_airspeed_validated_sub.update(&_airspeed_validated);
-		_tecs_status_sub.update(&_tecs_status);
-		_land_detected_sub.update(&_land_detected);
+	_vehicle_control_mode_sub.update(&_vehicle_control_mode);
+	_vehicle_attitude_sub.update(&_vehicle_attitude);
+	_local_pos_sub.update(&_local_pos);
+	_local_pos_sp_sub.update(&_local_pos_sp);
+	_pos_sp_triplet_sub.update(&_pos_sp_triplet);
+	_airspeed_validated_sub.update(&_airspeed_validated);
+	_tecs_status_sub.update(&_tecs_status);
+	_land_detected_sub.update(&_land_detected);
 
-		if (_home_position_sub.updated()) {
-			home_position_s home_position;
+	if (_home_position_sub.updated()) {
+		home_position_s home_position;
 
-			if (_home_position_sub.copy(&home_position) && home_position.valid_alt) {
-				_home_position_z = home_position.z;
+		if (_home_position_sub.copy(&home_position) && home_position.valid_alt) {
+			_home_position_z = home_position.z;
 
-			} else {
-				_home_position_z = NAN;
-			}
+		} else {
+			_home_position_z = NAN;
 		}
+	}
 
-		vehicle_status_poll();
-		action_request_poll();
-		vehicle_cmd_poll();
+	vehicle_status_poll();
+	action_request_poll();
+	vehicle_cmd_poll();
 
-		vehicle_air_data_s air_data;
+	vehicle_air_data_s air_data;
 
-		if (_vehicle_air_data_sub.update(&air_data)) {
-			_air_density = air_data.rho;
-		}
+	if (_vehicle_air_data_sub.update(&air_data)) {
+		_air_density = air_data.rho;
+	}
 
+	const bool offboard_direct_actuator = _vehicle_control_mode.flag_control_offboard_enabled
+					      && !_vehicle_control_mode.flag_control_position_enabled
+					      && !_vehicle_control_mode.flag_control_velocity_enabled
+					      && !_vehicle_control_mode.flag_control_altitude_enabled
+					      && !_vehicle_control_mode.flag_control_climb_rate_enabled
+					      && !_vehicle_control_mode.flag_control_acceleration_enabled
+					      && !_vehicle_control_mode.flag_control_attitude_enabled
+					      && !_vehicle_control_mode.flag_control_rates_enabled
+					      && !_vehicle_control_mode.flag_control_allocation_enabled;
+
+	const bool state_machine_active = should_run || offboard_direct_actuator;
+
+	if (state_machine_active) {
 		_vtol_type->handleEkfResets();
 
 		// check if mc and fw sp were updated
@@ -390,9 +405,12 @@ VtolAttitudeControl::Run()
 			// vehicle is doing a transition to FW
 			_vtol_vehicle_status.vehicle_vtol_state = vtol_vehicle_status_s::VEHICLE_VTOL_STATE_TRANSITION_TO_FW;
 
-			if (mc_att_sp_updated || fw_att_sp_updated) {
+			if (mc_att_sp_updated || fw_att_sp_updated || offboard_direct_actuator) {
 				_vtol_type->update_transition_state();
-				_vehicle_attitude_sp_pub.publish(_vehicle_attitude_sp);
+
+				if (mc_att_sp_updated || fw_att_sp_updated) {
+					_vehicle_attitude_sp_pub.publish(_vehicle_attitude_sp);
+				}
 			}
 
 			break;
@@ -401,9 +419,12 @@ VtolAttitudeControl::Run()
 			// vehicle is doing a transition to MC
 			_vtol_vehicle_status.vehicle_vtol_state = vtol_vehicle_status_s::VEHICLE_VTOL_STATE_TRANSITION_TO_MC;
 
-			if (mc_att_sp_updated || fw_att_sp_updated) {
+			if (mc_att_sp_updated || fw_att_sp_updated || offboard_direct_actuator) {
 				_vtol_type->update_transition_state();
-				_vehicle_attitude_sp_pub.publish(_vehicle_attitude_sp);
+
+				if (mc_att_sp_updated || fw_att_sp_updated) {
+					_vehicle_attitude_sp_pub.publish(_vehicle_attitude_sp);
+				}
 			}
 
 			break;
@@ -431,12 +452,14 @@ VtolAttitudeControl::Run()
 			break;
 		}
 
-		_vtol_type->fill_actuator_outputs();
+		if (should_run) {
+			_vtol_type->fill_actuator_outputs();
 
-		_vehicle_torque_setpoint0_pub.publish(_torque_setpoint_0);
-		_vehicle_torque_setpoint1_pub.publish(_torque_setpoint_1);
-		_vehicle_thrust_setpoint0_pub.publish(_thrust_setpoint_0);
-		_vehicle_thrust_setpoint1_pub.publish(_thrust_setpoint_1);
+			_vehicle_torque_setpoint0_pub.publish(_torque_setpoint_0);
+			_vehicle_torque_setpoint1_pub.publish(_torque_setpoint_1);
+			_vehicle_thrust_setpoint0_pub.publish(_thrust_setpoint_0);
+			_vehicle_thrust_setpoint1_pub.publish(_thrust_setpoint_1);
+		}
 
 		// Advertise/publish vtol vehicle status -- immediately if changed, otherwise at 1 Hz
 		const bool vtol_vehicle_status_changed =

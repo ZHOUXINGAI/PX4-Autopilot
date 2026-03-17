@@ -59,7 +59,7 @@
 #include <px4_platform_common/module.h>
 #include <px4_platform_common/module_params.h>
 #include <px4_platform_common/posix.h>
-#include <px4_platform_common/px4_work_queue/WorkItem.hpp>
+#include <px4_platform_common/px4_work_queue/ScheduledWorkItem.hpp>
 #include <uORB/Publication.hpp>
 #include <uORB/PublicationMulti.hpp>
 #include <uORB/Subscription.hpp>
@@ -93,7 +93,7 @@ using namespace time_literals;
 
 extern "C" __EXPORT int vtol_att_control_main(int argc, char *argv[]);
 
-class VtolAttitudeControl : public ModuleBase<VtolAttitudeControl>, public ModuleParams, public px4::WorkItem
+class VtolAttitudeControl : public ModuleBase<VtolAttitudeControl>, public ModuleParams, public px4::ScheduledWorkItem
 {
 public:
 

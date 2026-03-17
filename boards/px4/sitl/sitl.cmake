@@ -2,7 +2,11 @@
 # If the environment variable 'replay' is defined, we are building with replay
 # support. In this case, we enable the orb publisher rules.
 set(REPLAY_FILE "$ENV{replay}")
-if(REPLAY_FILE)
+set(FAULT_CONTROL_DISABLE_LOCKSTEP "$ENV{FAULT_CONTROL_DISABLE_LOCKSTEP}")
+if(FAULT_CONTROL_DISABLE_LOCKSTEP)
+	message(STATUS "Building without lockstep due to FAULT_CONTROL_DISABLE_LOCKSTEP")
+	set(ENABLE_LOCKSTEP_SCHEDULER no)
+elseif(REPLAY_FILE)
 	message(STATUS "Building with uorb publisher rules support")
 	add_definitions(-DORB_USE_PUBLISHER_RULES)
 

@@ -38,6 +38,25 @@
 
 using namespace matrix;
 
+namespace
+{
+
+float wrapped_time_s(const hrt_abstime timestamp_us)
+{
+	return static_cast<float>(fmod(static_cast<double>(timestamp_us) * 1e-6, 120.0));
+}
+
+Vector3f deterministic_mag_dither(const hrt_abstime timestamp_us)
+{
+	const float t = wrapped_time_s(timestamp_us);
+	return Vector3f(
+		       2e-5f * sinf(2.f * M_PI_F * 3.0f * t + 0.2f),
+		       2e-5f * sinf(2.f * M_PI_F * 4.1f * t + 0.9f),
+		       2e-5f * cosf(2.f * M_PI_F * 5.3f * t - 0.4f));
+}
+
+} // namespace
+
 SensorMagSim::SensorMagSim() :
 	ModuleParams(nullptr),
 	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::hp_default)
@@ -129,13 +148,12 @@ void SensorMagSim::Run()
 
 		if (_vehicle_attitude_sub.update(&attitude)) {
 			Vector3f expected_field = Dcmf{Quatf{attitude.q}} .transpose() * _mag_earth_pred;
-
-			expected_field += noiseGauss3f(0.02f, 0.02f, 0.03f);
+			const Vector3f mag_dither = deterministic_mag_dither(attitude.timestamp);
 
 			_px4_mag.update(attitude.timestamp,
-					expected_field(0) + _sim_mag_offset_x.get(),
-					expected_field(1) + _sim_mag_offset_y.get(),
-					expected_field(2) + _sim_mag_offset_z.get());
+					expected_field(0) + _sim_mag_offset_x.get() + mag_dither(0),
+					expected_field(1) + _sim_mag_offset_y.get() + mag_dither(1),
+					expected_field(2) + _sim_mag_offset_z.get() + mag_dither(2));
 		}
 	}
 

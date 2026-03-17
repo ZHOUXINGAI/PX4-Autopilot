@@ -8,7 +8,10 @@
 #
 # Start Control Allocator
 #
-control_allocator start
+if [ "${FAULT_CONTROL_DISABLE_INTERNAL_CA:-0}" != "1" ]
+then
+	control_allocator start
+fi
 
 airspeed_selector start
 

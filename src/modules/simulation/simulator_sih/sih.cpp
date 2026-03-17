@@ -53,6 +53,32 @@ using namespace math;
 using namespace matrix;
 using namespace time_literals;
 
+namespace
+{
+
+float wrapped_time_s(const hrt_abstime timestamp_us)
+{
+	return static_cast<float>(fmod(static_cast<double>(timestamp_us) * 1e-6, 120.0));
+}
+
+Vector3f deterministic_imu_dither(const hrt_abstime timestamp_us, const Vector3f &amplitude, float base_freq_hz)
+{
+	const float t = wrapped_time_s(timestamp_us);
+	return Vector3f(
+		       amplitude(0) * sinf(2.f * M_PI_F * base_freq_hz * t + 0.31f),
+		       amplitude(1) * sinf(2.f * M_PI_F * (base_freq_hz * 1.37f) * t + 1.11f),
+		       amplitude(2) * cosf(2.f * M_PI_F * (base_freq_hz * 1.91f) * t - 0.47f));
+}
+
+float deterministic_airspeed_dither(const hrt_abstime timestamp_us)
+{
+	const float t = wrapped_time_s(timestamp_us);
+	return 0.03f * sinf(2.f * M_PI_F * 2.7f * t + 0.19f)
+	       + 0.02f * cosf(2.f * M_PI_F * 4.9f * t - 0.63f);
+}
+
+} // namespace
+
 Sih::Sih() :
 	ModuleParams(nullptr)
 {}
@@ -285,8 +311,6 @@ void Sih::parameters_updated()
 
 void Sih::init_variables()
 {
-	srand(1234);    // initialize the random seed once before calling generate_wgn()
-
 	_lpos = Vector3f(0.0f, 0.0f, 0.0f);
 	_v_N = Vector3f(0.0f, 0.0f, 0.0f);
 	_p_E = Vector3d(Wgs84::equatorial_radius, 0.0, 0.0);
@@ -527,18 +551,10 @@ void Sih::reconstruct_sensors_signals(const hrt_abstime &time_now_us)
 
 	// IMU
 	const Dcmf R_E2B(_q_E.inversed());
-	Vector3f accel_noise;
-	Vector3f gyro_noise;
-
-	if (_T_B.longerThan(FLT_EPSILON)) {
-		accel_noise = noiseGauss3f(0.5f, 1.7f, 1.4f);
-		gyro_noise = noiseGauss3f(0.14f, 0.07f, 0.03f);
-
-	} else {
-		// Lower noise when not armed
-		accel_noise = noiseGauss3f(0.1f, 0.1f, 0.1f);
-		gyro_noise = noiseGauss3f(0.01f, 0.01f, 0.01f);
-	}
+	// Use a tiny deterministic dither instead of random noise so repeated
+	// nominal/fault runs stay reproducible without tripping PX4 stale-data checks.
+	const Vector3f accel_noise = deterministic_imu_dither(time_now_us, Vector3f(2e-4f, 2e-4f, 3e-4f), 11.0f);
+	const Vector3f gyro_noise = deterministic_imu_dither(time_now_us, Vector3f(2e-5f, 2e-5f, 3e-5f), 17.0f);
 
 	Vector3f specific_force_B = R_E2B * _specific_force_E;
 	Vector3f accel = specific_force_B + accel_noise;
@@ -557,8 +573,9 @@ void Sih::send_airspeed(const hrt_abstime &time_now_us)
 	airspeed_s airspeed{};
 	airspeed.timestamp_sample = time_now_us;
 
-	// regardless of vehicle type, body frame, etc this holds as long as wind=0
-	airspeed.true_airspeed_m_s = fmaxf(0.1f, _v_E.norm() + generate_wgn() * 0.2f);
+	// Keep the airspeed signal deterministic so repeated nominal runs do not
+	// diverge before fault injection due to random transition timing.
+	airspeed.true_airspeed_m_s = fmaxf(0.1f, _v_E.norm() + deterministic_airspeed_dither(time_now_us));
 	airspeed.indicated_airspeed_m_s = airspeed.true_airspeed_m_s * sqrtf(_wing_l.get_rho() / RHO);
 	airspeed.confidence = 0.7f;
 	airspeed.timestamp = hrt_absolute_time();

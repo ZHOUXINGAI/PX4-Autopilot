@@ -37,11 +37,26 @@
 
 using namespace matrix;
 
+namespace
+{
+
+float wrapped_time_s(const hrt_abstime timestamp_us)
+{
+	return static_cast<float>(fmod(static_cast<double>(timestamp_us) * 1e-6, 120.0));
+}
+
+float deterministic_baro_dither(const hrt_abstime timestamp_us)
+{
+	const float t = wrapped_time_s(timestamp_us);
+	return 0.05f * sinf(2.f * M_PI_F * 1.3f * t + 0.71f);
+}
+
+} // namespace
+
 SensorBaroSim::SensorBaroSim() :
 	ModuleParams(nullptr),
 	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::hp_default)
 {
-	srand(1234); // initialize the random seed once before calling generate_wgn()
 }
 
 SensorBaroSim::~SensorBaroSim()
@@ -110,8 +125,6 @@ void SensorBaroSim::Run()
 
 		if (_vehicle_global_position_sub.copy(&gpos)) {
 
-			const float dt = math::constrain((gpos.timestamp - _last_update_time) * 1e-6f, 0.001f, 0.1f);
-
 			const float alt_msl = gpos.alt;
 
 			// calculate abs_pressure using an ISA model for the tropsphere (valid up to 11km above MSL)
@@ -123,37 +136,9 @@ void SensorBaroSim::Run()
 			const float pressure_msl = 101325.0f; // pressure at MSL
 			const float absolute_pressure = pressure_msl / pressure_ratio;
 
-			// generate Gaussian noise sequence using polar form of Box-Muller transformation
-			double y1;
-			{
-				double x1;
-				double x2;
-				double w;
-
-				if (!_baro_rnd_use_last) {
-					do {
-						x1 = 2. * (double)generate_wgn() - 1.;
-						x2 = 2. * (double)generate_wgn() - 1.;
-						w = x1 * x1 + x2 * x2;
-					} while (w >= 1.0);
-
-					w = sqrt((-2.0 * log(w)) / w);
-					// calculate two values - the second value can be used next time because it is uncorrelated
-					y1 = x1 * w;
-					_baro_rnd_y2 = x2 * w;
-					_baro_rnd_use_last = true;
-
-				} else {
-					// no need to repeat the calculation - use the second value from last update
-					y1 = _baro_rnd_y2;
-					_baro_rnd_use_last = false;
-				}
-			}
-
-			// Apply noise and drift
-			const float abs_pressure_noise = 1.f * (float)y1;  // 1 Pa RMS noise
-			_baro_drift_pa += _baro_drift_pa_per_sec * dt;
-			const float absolute_pressure_noisy = absolute_pressure + abs_pressure_noise + _baro_drift_pa;
+			// Keep the barometer deterministic for repeatable nominal/fault
+			// comparisons while still changing enough to avoid stale detection.
+			const float absolute_pressure_noisy = absolute_pressure + deterministic_baro_dither(gpos.timestamp);
 
 			// convert to hPa
 			float pressure = absolute_pressure_noisy + _sim_baro_off_p.get();
